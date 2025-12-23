@@ -423,7 +423,7 @@ class EvolutionSearcher:
 
         self.save_checkpoint()
 
-    def measure_latency(self, model, cand, device='cuda', num_runs=20, warmup_runs=10):
+    def measure_latency(self, model, cand, device='cuda', num_runs=40, warmup_runs=20):
         model.eval()
         # Handle the device specification from args.latency_gpu
         if device == 'cuda' or device is None:

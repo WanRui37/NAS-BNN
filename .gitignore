@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 # Work Dirs
-work_dirs
+# work_dirs
 
 # Distribution / packaging
 .Python

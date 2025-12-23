@@ -53,7 +53,6 @@ parser.add_argument('--max-train-iters', type=int, default=10)
 parser.add_argument('--train-batch-size', type=int, default=256)
 parser.add_argument('--test-batch-size', type=int, default=256)
 parser.add_argument('--gpu', default=None, type=int, help='GPU id to use.')
-parser.add_argument('--latency-gpu', default=None, type=str, help='GPU id to use for latency measurement.')
 parser.add_argument('--world-size',
                     default=-1,
                     type=int,
@@ -80,9 +79,7 @@ parser.add_argument('--multiprocessing-distributed',
                     'N processes per node, which has N GPUs. This is the '
                     'fastest way to use PyTorch for either single node or '
                     'multi node data parallel training')
-parser.add_argument('--search-without-acc',
-                    action='store_true',
-                    help='Search without accuracy')
+
 
 def is_first_gpu(args, ngpus_per_node):
     return not args.multiprocessing_distributed or (
@@ -136,37 +133,36 @@ class EvolutionSearcher:
         # Data loading code
         traindir = os.path.join(args.data, 'train')
         valdir = os.path.join(args.data, 'val')
-        if not args.search_without_acc:
-            if args.dataset == 'imagenet':
-                normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
-                                                std=[0.5, 0.5, 0.5])
-                train_transform = transforms.Compose([
-                    transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(), normalize
-                ])
-                val_transform = transforms.Compose([
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(), normalize
-                ])
-                train_dataset = datasets.ImageFolder(traindir, train_transform)
-                val_dataset = datasets.ImageFolder(valdir, val_transform)
-            elif args.dataset == 'cifar10':
-                normalize = transforms.Normalize(
-                    mean=[0.49139968, 0.48215827, 0.44653124],
-                    std=[0.24703233, 0.24348505, 0.26158768])
-                train_transform = transforms.Compose([
-                    transforms.RandomCrop(32, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(), normalize
-                ])
-                val_transform = transforms.Compose(
-                    [transforms.ToTensor(), normalize])
-                train_dataset = datasets.ImageFolder(traindir, train_transform)
-                val_dataset = datasets.ImageFolder(valdir, val_transform)
-            else:
-                raise NotImplementedError
+        if args.dataset == 'imagenet':
+            normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                             std=[0.5, 0.5, 0.5])
+            train_transform = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(), normalize
+            ])
+            val_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(), normalize
+            ])
+            train_dataset = datasets.ImageFolder(traindir, train_transform)
+            val_dataset = datasets.ImageFolder(valdir, val_transform)
+        elif args.dataset == 'cifar10':
+            normalize = transforms.Normalize(
+                mean=[0.49139968, 0.48215827, 0.44653124],
+                std=[0.24703233, 0.24348505, 0.26158768])
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(), normalize
+            ])
+            val_transform = transforms.Compose(
+                [transforms.ToTensor(), normalize])
+            train_dataset = datasets.ImageFolder(traindir, train_transform)
+            val_dataset = datasets.ImageFolder(valdir, val_transform)
+        else:
+            raise NotImplementedError
 
         if args.distributed:
             train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -177,29 +173,24 @@ class EvolutionSearcher:
             train_sampler = None
             val_sampler = None
 
-        if not args.search_without_acc:
-            train_loader = torch.utils.data.DataLoader(
-                train_dataset,
-                batch_size=args.train_batch_size,
-                shuffle=(train_sampler is None),
-                num_workers=args.workers,
-                pin_memory=True,
-                sampler=train_sampler)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=args.train_batch_size,
+            shuffle=(train_sampler is None),
+            num_workers=args.workers,
+            pin_memory=True,
+            sampler=train_sampler)
 
-            val_loader = torch.utils.data.DataLoader(
-                val_dataset,
-                batch_size=args.test_batch_size,
-                shuffle=False,
-                num_workers=args.workers,
-                pin_memory=True,
-                sampler=val_sampler)
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=args.test_batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            pin_memory=True,
+            sampler=val_sampler)
 
-        if not args.search_without_acc:
-            self.train_loader = train_loader
-            self.val_loader = val_loader
-        else:
-            self.train_loader = None
-            self.val_loader = None
+        self.train_loader = train_loader
+        self.val_loader = val_loader
 
         self.checkpoint_name = os.path.join(args.logdir, 'info.pth.tar')
 
@@ -216,7 +207,6 @@ class EvolutionSearcher:
         info['vis_dict'] = self.vis_dict
         info['epoch'] = self.epoch
         info['pareto_global'] = self.pareto_global
-
         torch.save(info, self.checkpoint_name)
         if is_first_gpu(self.args, self.ngpus_per_node):
             self.logger.info('Save checkpoint to {}'.format(
@@ -231,15 +221,8 @@ class EvolutionSearcher:
             return False
         if 'ops' not in info:
             _, _, info['ops'] = self.m.get_ops(cand)
-        if self.args.search_without_acc:
-            info['acc'] = -1
-        else:
-            info['acc'], _ = get_cand_acc(self.model, cand, self.train_loader,
-                                          self.val_loader, self.args)
-        
-        # Use the latency_gpu argument from args, with fallback to default device
-        latency_device = self.args.latency_gpu if self.args.latency_gpu is not None else 'cuda'
-        info['latency'] = self.measure_latency(self.model, cand, latency_device)
+        info['acc'], _ = get_cand_acc(self.model, cand, self.train_loader,
+                                      self.val_loader, self.args)
         info['visited'] = True
         return True
 
@@ -414,52 +397,12 @@ class EvolutionSearcher:
                 for s in ops_stages:
                     cand_tuple = self.pareto_global[s]
                     self.logger.info(
-                        'OPs Stage.{}, Top-1 acc: {:.2f}, OPs: {:.2f}, Latency: {:.2f}, {}'.
-                        format(s, self.vis_dict[cand_tuple]['acc'],
-                               self.vis_dict[cand_tuple]['ops'], 
-                               self.vis_dict[cand_tuple]['latency'], 
-                               cand_tuple,))
+                        'OPs Stage.{}, {}, Top-1 acc: {:.2f}, OPs: {:.2f}'.
+                        format(s, cand_tuple, self.vis_dict[cand_tuple]['acc'],
+                               self.vis_dict[cand_tuple]['ops']))
             self.epoch += 1
 
         self.save_checkpoint()
-
-    def measure_latency(self, model, cand, device='cuda', num_runs=20, warmup_runs=10):
-        model.eval()
-        # Handle the device specification from args.latency_gpu
-        if device == 'cuda' or device is None:
-            device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
-        elif isinstance(device, str) and device.startswith('cuda:'):
-            # Use specific GPU device
-            device = torch.device(device)
-        else:
-            device = torch.device(device)
-        self.logger.info(f"=> measuring latency on device {device}")
-        
-        dummy_input = torch.randn((1, 3, 224, 224)).to(device)
-        
-        # Move model to the specified device
-        model.to(device)
-        
-        # Warmup runs
-        for _ in range(warmup_runs):
-            with torch.no_grad():
-                _ = model(dummy_input, cand)
-        
-        # Actual timing runs
-        if 'cuda' in str(device):
-            torch.cuda.synchronize(device)
-        start_time = time.time()
-        
-        for _ in range(num_runs):
-            with torch.no_grad():
-                _ = model(dummy_input, cand)
-        
-        if 'cuda' in str(device):
-            torch.cuda.synchronize(device)
-        end_time = time.time()
-        
-        avg_latency = (end_time - start_time) / num_runs * 1000  # Convert to milliseconds
-        return avg_latency
 
 
 def main():
@@ -473,7 +416,7 @@ def main():
         args.world_size = int(os.environ['WORLD_SIZE'])
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
-    
+
     ngpus_per_node = torch.cuda.device_count()
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
@@ -533,8 +476,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         if is_first_gpu(args, ngpus_per_node):
             logger.info(f"=> no checkpoint found at '{args.supernet}'")
-    
-    logger.info(f"=> search without acc")
+            exit(0)
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -559,11 +501,9 @@ def main_worker(gpu, ngpus_per_node, args):
             # DistributedDataParallel will divide and allocate batch_size to
             # all available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
-        logger.info(f"=>use model parallel!")
     elif args.gpu is not None:
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
-        logger.info(f"=>use model single!")
     else:
         # DataParallel will divide and allocate batch_size to all available
         # GPUs
@@ -578,6 +518,7 @@ def main_worker(gpu, ngpus_per_node, args):
     if is_first_gpu(args, ngpus_per_node):
         logger.info('total searching time = {:.2f} hours'.format(
             (time.time() - t) / 3600))
+
 
 def accuracy(output, target, topk=(1, )):
     """Computes the accuracy over the k top predictions for the specified

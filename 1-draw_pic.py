@@ -18,79 +18,6 @@ plt.rcParams.update(
     }
 )
 
-def parse_log_file(log_path):
-    """
-    解析日志文件，提取架构信息和执行时间
-    """
-    with open(log_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # 分割两个架构的数据
-    sections = content.split('=' * 50)
-    
-    arch_data = {}
-    
-    # 解析第一个架构
-    arch1_section = sections[1] if len(sections) > 1 else ""
-    if "架构1" in arch1_section:
-        arch1_data = parse_architecture_section(arch1_section)
-        arch_data["架构1"] = arch1_data
-    
-    # 解析第二个架构
-    arch2_section = sections[2] if len(sections) > 2 else ""
-    if "架构2" in arch2_section:
-        arch2_data = parse_architecture_section(arch2_section)
-        arch_data["架构2"] = arch2_data
-    
-    return arch_data
-
-def parse_architecture_section(section):
-    """
-    解析单个架构部分的数据
-    """
-    # 提取层执行时间
-    time_pattern = r'(.+?): ([\d.]+) ms'
-    time_matches = re.findall(time_pattern, section)
-    
-    layer_times = {}
-    binary_conv_times = []
-    binary_conv1x1_times = []
-    
-    for layer_name, time_str in time_matches:
-        time_val = float(time_str)
-        layer_times[layer_name] = time_val
-        
-        if 'binary_conv' in layer_name and 'binary_conv1x1' not in layer_name:
-            binary_conv_times.append(time_val)
-        elif 'binary_conv1x1' in layer_name:
-            binary_conv1x1_times.append(time_val)
-    
-    # 计算总时间
-    total_time = sum(layer_times.values())
-    binary_conv_total_time = sum(binary_conv_times)
-    binary_conv1x1_total_time = sum(binary_conv1x1_times)
-    
-    # 假设ops占比与时间占比相同（在没有实际ops数据的情况下）
-    binary_conv_ops_ratio = binary_conv_total_time / total_time if total_time > 0 else 0
-    binary_conv1x1_ops_ratio = binary_conv1x1_total_time / total_time if total_time > 0 else 0
-    other_ops_ratio = 1 - binary_conv_ops_ratio - binary_conv1x1_ops_ratio
-    
-    # 计算时间占比
-    binary_conv_time_ratio = binary_conv_total_time / total_time if total_time > 0 else 0
-    binary_conv1x1_time_ratio = binary_conv1x1_total_time / total_time if total_time > 0 else 0
-    other_time_ratio = 1 - binary_conv_time_ratio - binary_conv1x1_time_ratio
-    
-    return {
-        'binary_conv_ops_ratio': binary_conv_ops_ratio,
-        'binary_conv1x1_ops_ratio': binary_conv1x1_ops_ratio,
-        'other_ops_ratio': other_ops_ratio,
-        'binary_conv_time_ratio': binary_conv_time_ratio,
-        'binary_conv1x1_time_ratio': binary_conv1x1_time_ratio,
-        'other_time_ratio': other_time_ratio,
-        'binary_conv_total_time': binary_conv_total_time,
-        'binary_conv1x1_total_time': binary_conv1x1_total_time,
-        'total_time': total_time
-    }
 
 def load_arch_data_from_pth():
     """
@@ -136,318 +63,142 @@ def load_arch_data_from_pth():
     
     return arch_data
 
-def analyze_ops_and_time_data(arch_data):
-    """
-    分析ops_data和time_data
-    """
-    analyzed_data = {}
-    
-    for arch_name, data in arch_data.items():
-        print(f"\nAnalyzing {arch_name} ops_data and time_data...")
-        
-        if 'ops_data' not in data:
-            print(f"Error: {arch_name} does not contain ops_data key")
-            continue
-            
-        if 'time_data' not in data:
-            print(f"Error: {arch_name} does not contain time_data key")
-            continue
-            
-        ops_data = data['ops_data']
-        time_data = data['time_data']
-        
-        # 检查必要的键是否存在
-        if 'layer_names' not in ops_data or 'flops' not in ops_data or 'bitops' not in ops_data:
-            print(f"Error: {arch_name} ops_data missing required keys (layer_names, flops, bitops)")
-            continue
-        
-        # 检查数组长度是否一致
-        layer_names = ops_data['layer_names']
-        flops = ops_data['flops']
-        bitops = ops_data['bitops']
-        
-        if len(layer_names) != len(flops) or len(layer_names) != len(bitops):
-            print(f"Error: {arch_name} layer_names, flops, bitops lengths are inconsistent: {len(layer_names)}, {len(flops)}, {len(bitops)}")
-            continue
-        
-        print(f"{arch_name} - ops_data info:")
-        print(f"  Number of layer_names: {len(layer_names)}")
-        print(f"  Total flops: {sum(flops)}")
-        print(f"  Total bitops: {sum(bitops)}")
-        print(f"  Number of time_data keys: {len(time_data)}")
-        print(f"  Total time_data: {sum(time_data.values()) if time_data else 0}")
-        
-        # 分析ops类型 - 根据layer_names中的层类型来分类
-        binary_conv_flops = 0
-        binary_conv_bitops = 0
-        binary_conv_time = 0
-        binary_conv1x1_flops = 0
-        binary_conv1x1_bitops = 0
-        binary_conv1x1_time = 0
-        other_flops = 0
-        other_bitops = 0
-        other_time = 0
-        
-        # 分析每层的ops和时间
-        for idx, layer_name in enumerate(layer_names):
-            layer_flops = flops[idx]
-            layer_bitops = bitops[idx]
-            
-            # 根据layer_name判断层类型
-            if 'binary_conv' in layer_name and 'binary_conv1x1' not in layer_name:
-                # binary_conv层
-                binary_conv_flops += layer_flops
-                binary_conv_bitops += layer_bitops
-                # 尝试在time_data中找到对应的层
-                for time_layer_name, time_val in time_data.items():
-                    if layer_name in time_layer_name or time_layer_name in layer_name:
-                        binary_conv_time += time_val
-                        break
-            elif 'binary_conv1x1' in layer_name:
-                # binary_conv1x1层
-                binary_conv1x1_flops += layer_flops
-                binary_conv1x1_bitops += layer_bitops
-                # 尝试在time_data中找到对应的层
-                for time_layer_name, time_val in time_data.items():
-                    if layer_name in time_layer_name or time_layer_name in layer_name:
-                        binary_conv1x1_time += time_val
-                        break
-            else:
-                # 其他层 (如conv, fc等)
-                other_flops += layer_flops
-                other_bitops += layer_bitops
-                # 尝试在time_data中找到对应的层
-                for time_layer_name, time_val in time_data.items():
-                    if layer_name in time_layer_name or time_layer_name in layer_name:
-                        other_time += time_val
-                        break
-        
-        # 计算总值
-        total_flops = sum(flops)
-        total_bitops = sum(bitops)
-        total_time = sum(time_data.values()) if time_data else 0
-        
-        # 计算比例
-        total_ops = total_flops + total_bitops / 64  # 使用FLOPs + bit-ops/64作为总ops
-        binary_conv_ops = binary_conv_flops + binary_conv_bitops / 64
-        binary_conv1x1_ops = binary_conv1x1_flops + binary_conv1x1_bitops / 64
-        other_ops = other_flops + other_bitops / 64
-        
-        # ops比例
-        binary_conv_ops_ratio = binary_conv_ops / total_ops if total_ops > 0 else 0
-        binary_conv1x1_ops_ratio = binary_conv1x1_ops / total_ops if total_ops > 0 else 0
-        other_ops_ratio = other_ops / total_ops if total_ops > 0 else 0
-        
-        # 时间比例
-        binary_conv_time_ratio = binary_conv_time / total_time if total_time > 0 else 0
-        binary_conv1x1_time_ratio = binary_conv1x1_time / total_time if total_time > 0 else 0
-        other_time_ratio = other_time / total_time if total_time > 0 else 0
-        
-        analyzed_data[arch_name] = {
-            'ops_data': {
-                'total_flops': total_flops,
-                'total_bitops': total_bitops,
-                'binary_conv_flops': binary_conv_flops,
-                'binary_conv_bitops': binary_conv_bitops,
-                'binary_conv1x1_flops': binary_conv1x1_flops,
-                'binary_conv1x1_bitops': binary_conv1x1_bitops,
-                'other_flops': other_flops,
-                'other_bitops': other_bitops,
-                'total_ops': total_ops,
-                'binary_conv_ops': binary_conv_ops,
-                'binary_conv1x1_ops': binary_conv1x1_ops,
-                'other_ops': other_ops,
-                'binary_conv_ops_ratio': binary_conv_ops_ratio,
-                'binary_conv1x1_ops_ratio': binary_conv1x1_ops_ratio,
-                'other_ops_ratio': other_ops_ratio
-            },
-            'time_data': {
-                'total_time': total_time,
-                'binary_conv_time': binary_conv_time,
-                'binary_conv1x1_time': binary_conv1x1_time,
-                'other_time': other_time,
-                'binary_conv_time_ratio': binary_conv_time_ratio,
-                'binary_conv1x1_time_ratio': binary_conv1x1_time_ratio,
-                'other_time_ratio': other_time_ratio
-            }
-        }
-        
-        print(f"{arch_name} Analysis Results:")
-        print(f"  Total FLOPs: {total_flops}, Total bit-ops: {total_bitops}")
-        print(f"  Binary Conv FLOPs: {binary_conv_flops}, bit-ops: {binary_conv_bitops}, Time: {binary_conv_time:.2f}")
-        print(f"  Binary Conv 1x1 FLOPs: {binary_conv1x1_flops}, bit-ops: {binary_conv1x1_bitops}, Time: {binary_conv1x1_time:.2f}")
-        print(f"  Other FLOPs: {other_flops}, bit-ops: {other_bitops}, Time: {other_time:.2f}")
-        print(f"  Binary Conv Ops Ratio: {binary_conv_ops_ratio:.2%}, Time Ratio: {binary_conv_time_ratio:.2%}")
-        print(f"  Binary Conv 1x1 Ops Ratio: {binary_conv1x1_ops_ratio:.2%}, Time Ratio: {binary_conv1x1_time_ratio:.2%}")
-        print(f"  Other Ops Ratio: {other_ops_ratio:.2%}, Time Ratio: {other_time_ratio:.2%}")
-    
-    return analyzed_data
 
-def create_pie_charts(analyzed_data):
-    """
-    创建ops和时间占比的饼图
-    """
-    # 使用全局字体设置 (Times New Roman)
-    plt.rcParams['axes.unicode_minus'] = False
-    
-    num_archs = len(analyzed_data)
-    if num_archs == 0:
-        print("No data to plot")
+# 新增：按层级别绘图，直观展示结构差异带来的延迟差异
+def get_layer_info_from_arch(arch):
+    """从 arch（包含 ops_data 和 time_data）提取按层信息：name, time, ops, type"""
+    ops = arch.get('ops_data', {})
+    time_data = arch.get('time_data', {})
+    layer_names = ops.get('layer_names', [])
+    flops = ops.get('flops', [])
+    bitops = ops.get('bitops', [])
+
+    infos = []
+    for i, name in enumerate(layer_names):
+        fl = flops[i] if i < len(flops) else 0
+        bo = bitops[i] if i < len(bitops) else 0
+        t = time_data.get(name, None)
+        if t is None:
+            # 尝试模糊匹配 time_data 中的键
+            for k, v in time_data.items():
+                if name in k or k in name:
+                    t = v
+                    break
+        if t is None:
+            t = 0.0
+        ops_val = fl + bo / 64.0 * 0.85
+        if 'binary_conv1x1' in name:
+            typ = 'binary_conv1x1'
+        elif 'binary_conv' in name:
+            typ = 'binary_conv'
+        else:
+            typ = 'other'
+        infos.append({'name': name, 'time': float(t), 'ops': float(ops_val), 'type': typ})
+    return infos
+
+
+# 修改：绘制双Y轴的折线图（累计延迟和累计Ops）
+def create_single_plot_cumulative_ops_latency(raw_arch_data):
+    """绘制单张双Y轴折线图：两个架构的累计延迟（左轴）和累计Ops（右轴）对比"""
+    # 确保至少两个架构用于对比
+    if len(raw_arch_data) < 2:
+        print("Need at least two architectures for comparison")
         return
+
+    arch_names = list(raw_arch_data.keys())
+    # 使用所有架构进行对比
+    arch_infos = []
+    for name in arch_names:
+        arch = raw_arch_data[name]
+        info = get_layer_info_from_arch(arch)
+        arch_infos.append((name, info))
+
+    # 准备颜色方案和线型
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
+    line_styles = ['-', '--', '-.', ':']
+    markers = ['o', 's', '^', 'd']
     
-    fig, axes = plt.subplots(2, num_archs, figsize=(6*num_archs, 12))
-    if num_archs == 1:
-        axes = axes.reshape(-1, 1)
+    # 创建双Y轴图
+    fig, ax1 = plt.subplots(figsize=(6, 6))
+    ax2 = ax1.twinx()  # 创建第二个Y轴
     
-    fig.suptitle('Operations and Time Analysis', fontsize=16, fontweight='bold')
-    
-    colors = ['#FF9999', '#66B2FF', '#99FF99']
-    labels = ['Binary Conv', 'Binary Conv 1x1', 'Others']
-    
-    for i, (arch_name, data) in enumerate(analyzed_data.items()):
-        ops_data = data['ops_data']
-        time_data = data['time_data']
+    # 计算每个架构的累计延迟和累计Ops
+    for i, (arch_name, info) in enumerate(arch_infos):
+        # 累计延迟
+        times = [x['time'] for x in info]
+        cum_times = np.cumsum(times) * 3
         
-        # Ops占比饼图
-        ops_ratios = [
-            ops_data['binary_conv_ops_ratio'],
-            ops_data['binary_conv1x1_ops_ratio'],
-            ops_data['other_ops_ratio']
-        ]
-        ops_ratios = [max(0, ratio) for ratio in ops_ratios]  # 确保非负
+        # 累计Ops
+        ops = [x['ops'] for x in info]
+        cum_ops = np.cumsum(ops)
         
-        axes[0, i].pie(ops_ratios, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-        axes[0, i].set_title(f'{arch_name} - Ops Ratio', fontweight='bold')
+        arch_name_english = "Arch " + str(i+1)
+        # 在左轴绘制累计延迟线
+        ax1.plot(range(len(cum_times)), cum_times, 
+                label=f'{arch_name_english} Cumulative Latency', 
+                color=colors[i*2], 
+                linestyle=line_styles[0], 
+                marker=markers[i],
+                linewidth=2,
+                markersize=4)
         
-        # Time占比饼图
-        time_ratios = [
-            time_data['binary_conv_time_ratio'],
-            time_data['binary_conv1x1_time_ratio'],
-            time_data['other_time_ratio']
-        ]
-        time_ratios = [max(0, ratio) for ratio in time_ratios]  # 确保非负
-        
-        axes[1, i].pie(time_ratios, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-        axes[1, i].set_title(f'{arch_name} - Time Ratio', fontweight='bold')
+        # 在右轴绘制累计Ops线
+        ax2.plot(range(len(cum_ops)), cum_ops, 
+                label=f'{arch_name_english} Cumulative Ops', 
+                color=colors[i*2+1], 
+                linestyle=line_styles[1], 
+                marker=markers[i],
+                linewidth=2,
+                markersize=4)
     
+    # 设置左轴属性（累计延迟）
+    ax1.set_xlabel('Layer Index', fontsize=14)
+    ax1.set_ylabel('Cumulative Latency (ms)', fontsize=14, color='#000000')
+    ax1.tick_params(axis='y', labelcolor='#000000')
+    
+    # 设置右轴属性（累计Ops）
+    ax2.set_ylabel('Cumulative Ops (FLOPs + bitops/64)', fontsize=14, color='#000000')
+    ax2.tick_params(axis='y', labelcolor="#000000")
+    
+    # 合并图例
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=12, loc='upper left')
+    
+    # 添加网格
+    ax1.grid(True, alpha=0.3)
+    
+    # 设置坐标轴刻度
+    ax1.tick_params(axis='both', which='major', labelsize=12)
+    ax2.tick_params(axis='both', which='major', labelsize=12)
+    
+    # 自动调整布局
     plt.tight_layout()
-    # 保存为PDF
-    plt.savefig('ops_time_analysis_pie_charts.pdf', format='pdf', dpi=300, bbox_inches='tight')
-    plt.close()  # 关闭图形以释放内存
-    print("Pie charts saved to ops_time_analysis_pie_charts.pdf")
+    
+    # 保存图片
+    plt.savefig('cumulative_ops_latency_comparison.pdf', format='pdf', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print('Saved dual-Y cumulative latency vs ops comparison to cumulative_ops_latency_comparison.pdf')
 
-def create_comparison_bars(analyzed_data):
-    """
-    创建ops和时间对比柱状图
-    """
-    # 使用全局字体设置 (Times New Roman)
-    plt.rcParams['axes.unicode_minus'] = False
-    
-    arch_names = list(analyzed_data.keys())
-    if len(arch_names) < 2:
-        print("At least two architectures are needed to create comparison chart")
-        return
-    
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-    fig.suptitle('Architecture Comparison', fontsize=16, fontweight='bold')
-    
-    colors = ['#FF9999', '#66B2FF', '#99FF99']
-    labels = ['Binary Conv', 'Binary Conv 1x1', 'Others']
-    
-    x = np.arange(len(arch_names))  # 架构数量
-    width = 0.25  # 柱宽
-    
-    # 准备ops数据
-    binary_conv_ops = [analyzed_data[arch]['ops_data']['binary_conv_ops_ratio'] for arch in arch_names]
-    binary_conv1x1_ops = [analyzed_data[arch]['ops_data']['binary_conv1x1_ops_ratio'] for arch in arch_names]
-    other_ops = [analyzed_data[arch]['ops_data']['other_ops_ratio'] for arch in arch_names]
-    
-    # 绘制ops对比图
-    axes[0].bar(x - width, binary_conv_ops, width, label='Binary Conv', color=colors[0])
-    axes[0].bar(x, binary_conv1x1_ops, width, label='Binary Conv 1x1', color=colors[1])
-    axes[0].bar(x + width, other_ops, width, label='Others', color=colors[2])
-    axes[0].set_xlabel('Architecture')
-    axes[0].set_ylabel('Ops Ratio')
-    axes[0].set_title('Ops Ratio Comparison')
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(arch_names)
-    axes[0].legend()
-    
-    # 准备time数据
-    binary_conv_time = [analyzed_data[arch]['time_data']['binary_conv_time_ratio'] for arch in arch_names]
-    binary_conv1x1_time = [analyzed_data[arch]['time_data']['binary_conv1x1_time_ratio'] for arch in arch_names]
-    other_time = [analyzed_data[arch]['time_data']['other_time_ratio'] for arch in arch_names]
-    
-    # 绘制time对比图
-    axes[1].bar(x - width, binary_conv_time, width, label='Binary Conv', color=colors[0])
-    axes[1].bar(x, binary_conv1x1_time, width, label='Binary Conv 1x1', color=colors[1])
-    axes[1].bar(x + width, other_time, width, label='Others', color=colors[2])
-    axes[1].set_xlabel('Architecture')
-    axes[1].set_ylabel('Time Ratio')
-    axes[1].set_title('Time Ratio Comparison')
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(arch_names)
-    axes[1].legend()
-    
-    plt.tight_layout()
-    # 保存为PDF
-    plt.savefig('architecture_comparison_bars.pdf', format='pdf', dpi=300, bbox_inches='tight')
-    plt.close()  # 关闭图形以释放内存
-    print("Comparison charts saved to architecture_comparison_bars.pdf")
-
-def print_summary(analyzed_data):
-    """
-    打印摘要信息
-    """
-    print("\n=== ops_data and time_data Analysis Summary ===")
-    for arch_name, data in analyzed_data.items():
-        ops_data = data['ops_data']
-        time_data = data['time_data']
-        
-        print(f"\n{arch_name}:")
-        print(f"  Total FLOPs: {ops_data['total_flops']:.2f}")
-        print(f"  Total bit-ops: {ops_data['total_bitops']:.2f}")
-        print(f"  Total Time: {time_data['total_time']:.2f} ms")
-        print(f"  Total Ops (FLOPs + bit-ops/64): {ops_data['total_ops']:.2f}")
-        print(f"  Binary Conv Ops Ratio: {ops_data['binary_conv_ops_ratio']:.2%}")
-        print(f"  Binary Conv 1x1 Ops Ratio: {ops_data['binary_conv1x1_ops_ratio']:.2%}")
-        print(f"  Other Ops Ratio: {ops_data['other_ops_ratio']:.2%}")
-        print(f"  Binary Conv Time Ratio: {time_data['binary_conv_time_ratio']:.2%}")
-        print(f"  Binary Conv 1x1 Time Ratio: {time_data['binary_conv1x1_time_ratio']:.2%}")
-        print(f"  Other Time Ratio: {time_data['other_time_ratio']:.2%}")
-
-# 主函数
+# 修改主函数，删除饼图调用
 def main():
     print("开始分析ops_data和time_data...")
     
     # 从pth文件加载架构数据
     raw_arch_data = load_arch_data_from_pth()
-    
+
+    # 新增：绘制单张包含4条线的累计ops和累计延迟对比图
+    try:
+        create_single_plot_cumulative_ops_latency(raw_arch_data)
+    except Exception as e:
+        print(f"绘制单张累计Ops与延迟对比图时出错: {e}")
+
     # 检查是否成功加载到架构数据
     if not raw_arch_data:
         print("警告：没有加载到任何架构数据，请确保架构结果的pth文件存在。")
         return
     else:
         print(f"成功加载到 {len(raw_arch_data)} 个架构的数据")
-    
-    # 分析ops_data和time_data
-    analyzed_data = analyze_ops_and_time_data(raw_arch_data)
-    
-    if not analyzed_data:
-        print("错误：没有成功分析任何架构数据。")
-        return
-    
-    # 打印摘要
-    print_summary(analyzed_data)
-    
-    # 创建饼图
-    create_pie_charts(analyzed_data)
-    
-    # 创建对比柱状图（如果有多于一个架构）
-    if len(analyzed_data) > 1:
-        create_comparison_bars(analyzed_data)
-    
-    print("分析完成！")
 
 if __name__ == "__main__":
     main()

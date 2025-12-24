@@ -66,12 +66,13 @@ def load_arch_data_from_pth():
 
 # 新增：按层级别绘图，直观展示结构差异带来的延迟差异
 def get_layer_info_from_arch(arch):
-    """从 arch（包含 ops_data 和 time_data）提取按层信息：name, time, ops, type"""
+    """从 arch（包含 ops_data 和 time_data）提取按层信息：name, time, ops, type, channels"""
     ops = arch.get('ops_data', {})
     time_data = arch.get('time_data', {})
     layer_names = ops.get('layer_names', [])
     flops = ops.get('flops', [])
     bitops = ops.get('bitops', [])
+    channels_info = ops.get('channels_info', [])  # 新增：获取通道信息
 
     infos = []
     for i, name in enumerate(layer_names):
@@ -87,19 +88,41 @@ def get_layer_info_from_arch(arch):
         if t is None:
             t = 0.0
         ops_val = fl + bo / 64.0 * 0.85
+        
+        # 解析通道信息
+        channels = channels_info[i] if i < len(channels_info) else ""
+        in_channels = 0
+        out_channels = 0
+        if channels:
+            # 解析格式: "in_channels=X, out_channels=Y"
+            match = re.search(r'in_channels=(\d+)', channels)
+            if match:
+                in_channels = int(match.group(1))
+            match = re.search(r'out_channels=(\d+)', channels)
+            if match:
+                out_channels = int(match.group(1))
+        
         if 'binary_conv1x1' in name:
             typ = 'binary_conv1x1'
         elif 'binary_conv' in name:
             typ = 'binary_conv'
         else:
             typ = 'other'
-        infos.append({'name': name, 'time': float(t), 'ops': float(ops_val), 'type': typ})
+        
+        infos.append({
+            'name': name, 
+            'time': float(t), 
+            'ops': float(ops_val), 
+            'type': typ,
+            'in_channels': in_channels,
+            'out_channels': out_channels
+        })
     return infos
 
 
-# 修改：绘制双Y轴的折线图（累计延迟和累计Ops）
+# 修改：绘制双Y轴的折线图（累计延迟和累计Ops），只在延迟线上添加通道变化标签
 def create_single_plot_cumulative_ops_latency(raw_arch_data):
-    """绘制单张双Y轴折线图：两个架构的累计延迟（左轴）和累计Ops（右轴）对比"""
+    """绘制单张双Y轴折线图：两个架构的累计延迟（左轴）和累计Ops（右轴）对比，只在延迟线上添加通道变化标签"""
     # 确保至少两个架构用于对比
     if len(raw_arch_data) < 2:
         print("Need at least two architectures for comparison")
@@ -119,7 +142,7 @@ def create_single_plot_cumulative_ops_latency(raw_arch_data):
     markers = ['o', 's', '^', 'd']
     
     # 创建双Y轴图
-    fig, ax1 = plt.subplots(figsize=(6, 6))
+    fig, ax1 = plt.subplots(figsize=(6, 6))  # 增大图形宽度以容纳更多标签
     ax2 = ax1.twinx()  # 创建第二个Y轴
     
     # 计算每个架构的累计延迟和累计Ops
@@ -133,8 +156,39 @@ def create_single_plot_cumulative_ops_latency(raw_arch_data):
         cum_ops = np.cumsum(ops)
         
         arch_name_english = "Arch " + str(i+1)
+        
+        # 检测通道变化并只在延迟线上添加标签，使用不同的偏移避免重叠
+        prev_out_channels = None
+        for j, layer_info in enumerate(info):
+            current_out_channels = layer_info['out_channels']
+            
+            # 如果是第一个层或者通道数发生变化
+            if (prev_out_channels is None or current_out_channels != prev_out_channels) \
+                and j >= 25 and j != len(info) - 1:
+                # 为不同架构使用不同的偏移量，避免标签重叠
+                if i == 0:  # 第一个架构
+                    xytext = (-40, 20)
+                elif i == 1:  # 第二个架构
+                    if j == 33:
+                        xytext = (-10, -40)
+                    else:
+                        xytext = (-10, -30)
+
+                
+                # 只在累计延迟线上添加标签
+                ax1.annotate(f'{current_out_channels}', 
+                            xy=(j, cum_times[j]), 
+                            xytext=xytext,
+                            textcoords='offset points',
+                            fontsize=14,  # 稍微减小字体
+                            color=colors[i*2],
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8, edgecolor=colors[i*2]),
+                            arrowprops=dict(arrowstyle="->", color=colors[i*2], lw=1, alpha=0.7))
+            
+            prev_out_channels = current_out_channels
+
         # 在左轴绘制累计延迟线
-        ax1.plot(range(len(cum_times)), cum_times, 
+        line1 = ax1.plot(range(len(cum_times)), cum_times, 
                 label=f'{arch_name_english} Cumulative Latency', 
                 color=colors[i*2], 
                 linestyle=line_styles[0], 
@@ -143,14 +197,14 @@ def create_single_plot_cumulative_ops_latency(raw_arch_data):
                 markersize=4)
         
         # 在右轴绘制累计Ops线
-        ax2.plot(range(len(cum_ops)), cum_ops, 
+        line2 = ax2.plot(range(len(cum_ops)), cum_ops, 
                 label=f'{arch_name_english} Cumulative Ops', 
                 color=colors[i*2+1], 
                 linestyle=line_styles[1], 
                 marker=markers[i],
                 linewidth=2,
                 markersize=4)
-    
+        
     # 设置左轴属性（累计延迟）
     ax1.set_xlabel('Layer Index', fontsize=14)
     ax1.set_ylabel('Cumulative Latency (ms)', fontsize=14, color='#000000')
@@ -176,9 +230,9 @@ def create_single_plot_cumulative_ops_latency(raw_arch_data):
     plt.tight_layout()
     
     # 保存图片
-    plt.savefig('cumulative_ops_latency_comparison.pdf', format='pdf', dpi=300, bbox_inches='tight')
+    plt.savefig('cumulative_ops_latency_comparison_with_channels.pdf', format='pdf', dpi=300, bbox_inches='tight')
     plt.close(fig)
-    print('Saved dual-Y cumulative latency vs ops comparison to cumulative_ops_latency_comparison.pdf')
+    print('Saved dual-Y cumulative latency vs ops comparison with channel markers (latency only) to cumulative_ops_latency_comparison_with_channels.pdf')
 
 # 修改主函数，删除饼图调用
 def main():

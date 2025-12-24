@@ -151,6 +151,7 @@ def calculate_ops_per_layer(model, cand_tuple):
     flops_per_layer = []
     bitops_per_layer = []
     layer_names = []
+    channels_info = []  # 新增：存储通道信息
     
     pre = None
     cur = None
@@ -172,16 +173,13 @@ def calculate_ops_per_layer(model, cand_tuple):
             flops_per_layer.append(tmp_flops)
             bitops_per_layer.append(tmp_bitops)
             layer_names.append(layer_name)
-            print(f"features.{i}.{j}.conv: FLOPs={tmp_flops:.6f}M, bit-ops={tmp_bitops:.6f}M")
+            # 添加通道信息：输入通道3（RGB），输出通道为当前层的channels
+            channels_info.append(f"in_channels=3, out_channels={channels}")
+            print(f"features.{i}.{j}.conv: FLOPs={tmp_flops:.6f}M, bit-ops={tmp_bitops:.6f}M, in_channels=3, out_channels={channels}")
         else:  # 非第一阶段，使用BasicBlock
             # BasicBlock包含两个卷积层：binary_conv和binary_conv1x1
             # 我们需要将总的FLOPs和bit-ops分解为这两个部分
             tmp_flops, tmp_bitops = layer_module.get_flops_bitops(pre, cur)
-            
-            # 从BasicBlock的get_flops_bitops源码可以看到，bitops由两部分组成：
-            # bitops1 = binary_conv的bitops
-            # bitops2 = binary_conv1x1的bitops
-            # 而flops目前为0
             
             # 重新计算每个组件的bitops
             pre_channels = pre[0] if pre is not None else cur[0]
@@ -194,23 +192,23 @@ def calculate_ops_per_layer(model, cand_tuple):
             flops1 = 0.0
             
             # binary_conv1x1部分的bitops (1x1卷积)
-            # 输出通道数是当前层的channels，即cur[0]，但根据架构可能有所不同
-            # 实际上应该是从当前层到下一层的通道数变换，这里应该是cur[2]，但实际上是当前层输出通道
-            # 根据模型结构，binary_conv1x1的输出通道是max_oup，即cur[0]
             wh1x1 = layer_module.binary_conv1x1.wh
             bitops2 = (1 * 1 * cur[0] // groups2 * cur[0] * wh1x1 * wh1x1) / 1e6
             flops2 = 0.0
             
-            # 输出binary_conv部分
-            print(f"features.{i}.{j}.binary_conv: FLOPs={flops1:.6f}M, bit-ops={bitops1:.6f}M")
+            # 输出binary_conv部分，添加通道信息
+            print(f"features.{i}.{j}.binary_conv: FLOPs={flops1:.6f}M, bit-ops={bitops1:.6f}M, in_channels={pre_channels}, out_channels={channels}")
             
-            # 输出binary_conv1x1部分
-            print(f"features.{i}.{j}.binary_conv1x1: FLOPs={flops2:.6f}M, bit-ops={bitops2:.6f}M")
+            # 输出binary_conv1x1部分，添加通道信息
+            print(f"features.{i}.{j}.binary_conv1x1: FLOPs={flops2:.6f}M, bit-ops={bitops2:.6f}M, in_channels={channels}, out_channels={channels}")
             
             # 添加到结果列表
             flops_per_layer.extend([flops1, flops2])
             bitops_per_layer.extend([bitops1, bitops2])
             layer_names.extend([f"features.{i}.{j}.binary_conv", f"features.{i}.{j}.binary_conv1x1"])
+            # 添加两个卷积层的通道信息
+            channels_info.extend([f"in_channels={pre_channels}, out_channels={channels}", 
+                                f"in_channels={channels}, out_channels={channels}"])
         
         pre = cur
     
@@ -220,7 +218,9 @@ def calculate_ops_per_layer(model, cand_tuple):
         flops_per_layer.append(fc_flops)
         bitops_per_layer.append(fc_bitops)
         layer_names.append("fc")
-        print(f"fc: FLOPs={fc_flops:.6f}M, bit-ops={fc_bitops:.6f}M")
+        # 添加全连接层的通道信息
+        channels_info.append(f"in_channels={pre[0]}, out_channels=1000")  # 假设输出是1000类
+        print(f"fc: FLOPs={fc_flops:.6f}M, bit-ops={fc_bitops:.6f}M, in_channels={pre[0]}, out_channels=1000")
     
     total_flops = sum(flops_per_layer)
     total_bitops = sum(bitops_per_layer)
@@ -235,6 +235,7 @@ def calculate_ops_per_layer(model, cand_tuple):
         'layer_names': layer_names,
         'flops': flops_per_layer,
         'bitops': bitops_per_layer,
+        'channels_info': channels_info,  # 新增：返回通道信息
         'total_flops': total_flops,
         'total_bitops': total_bitops,
         'total_ops': total_ops
